@@ -144,7 +144,7 @@ async def websocket_endpoint(websocket: WebSocket, topic: str):
                     system = f"Ты {npc.name}. Выполни команду: {command}. Учитывай личность и состояние."
                     history = []
                     reply = await generate_reply(system, history, command)
-                    if 'go to' in command.lower() or command === 'tell about city':
+                    if 'go to' in command.lower() or command == 'tell about city':
                         loc_name = command.split('to')[-1].strip() if 'go to' in command.lower() else None
                         if loc_name:
                             loc = db.query(Location).filter_by(name=loc_name).first()
