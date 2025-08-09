@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-dotenv
+openai>=1.0.0
+httpx
+cachetools  # Добавил для кэша AI
