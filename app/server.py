@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from sqlalchemy.sql import text
 from .db import init_db, SessionLocal
-from .models import NPC, Event, Message
+from .models import NPC, Event, Message, Weather
 from .chat_ws import manager
 from .npc_manager import NPCManager
 
@@ -27,12 +27,11 @@ npc_manager = NPCManager(broadcaster)
 async def startup():
     db = SessionLocal()
     try:
-        # Миграция старых записей
         db.execute(text("UPDATE messages SET role = 'user' WHERE role = 'npc'"))
         db.commit()
-        logger.info("Successfully migrated messages table")
+        logger.info("Успешно мигрирована таблица сообщений")
     except Exception as e:
-        logger.error(f"Failed to migrate messages table: {e}")
+        logger.error(f"Ошибка миграции таблицы сообщений: {e}")
     finally:
         db.close()
     await npc_manager.start()
@@ -44,7 +43,7 @@ def shutdown():
 @app.get('/')
 @app.head('/')
 async def root():
-    return JSONResponse({"message": "Welcome to the backend"})
+    return JSONResponse({"message": "Добро пожаловать в бэкенд"})
 
 @app.get('/favicon.ico')
 async def favicon():
@@ -55,7 +54,7 @@ def get_map():
     db = SessionLocal()
     try:
         npcs = db.query(NPC).all()
-        out = [{"id": n.id, "name": n.name, "x": n.x, "y": n.y, "profession": n.profession, "state": n.state} for n in npcs]  # Добавил state
+        out = [{"id": n.id, "name": n.name, "x": n.x, "y": n.y, "profession": n.profession, "state": n.state} for n in npcs]
         return out
     finally:
         db.close()
@@ -79,6 +78,28 @@ def get_chat_history(npc_id: int):
     finally:
         db.close()
 
+@app.get('/weather')
+def get_weather():
+    db = SessionLocal()
+    try:
+        weather = db.query(Weather).first()
+        return {"current": weather.current}
+    finally:
+        db.close()
+
+@app.post('/issue_law')
+async def issue_law(data: dict):
+    law = data.get('law')
+    db = SessionLocal()
+    try:
+        ev = Event(title="Новый закон", content=f"Мэр объявил: {law}.", ts=str(datetime.utcnow()))
+        db.add(ev)
+        db.commit()
+        await broadcaster('news', {"title": ev.title, "content": ev.content, "ts": ev.ts})
+        return {"status": "ok"}
+    finally:
+        db.close()
+
 @app.websocket('/ws/{topic}')
 async def websocket_endpoint(websocket: WebSocket, topic: str):
     await manager.connect(topic, websocket)
@@ -96,13 +117,13 @@ async def websocket_endpoint(websocket: WebSocket, topic: str):
                 try:
                     npc = db.query(NPC).get(npc_id)
                     if not npc:
-                        await manager.send_personal(websocket, {"type": "error", "data": "NPC not found"})
+                        await manager.send_personal(websocket, {"type": "error", "data": "Персонаж не найден"})
                         continue
                     system = f"Ты {npc.name}, {npc.personality}. Отвечай коротко и в характере. Учитывай отношения и погоду."
                     hist = db.query(Message).filter(Message.npc_id == npc_id).order_by(Message.id.desc()).limit(10).all()
                     history = [{'role': 'user' if m.role == 'npc' else m.role, 'content': m.content} for m in reversed(hist)]
-                    logger.debug(f"WebSocket history for NPC {npc_id}: {history}")
-                    db.add(Message(npc_id=npc_id, role='user', content=f"Player: {text}"))
+                    logger.debug(f"WebSocket история для NPC {npc_id}: {history}")
+                    db.add(Message(npc_id=npc_id, role='user', content=f"Игрок: {text}"))
                     db.commit()
                     from .ai import generate_reply
                     reply = await generate_reply(system, history, text)
@@ -118,22 +139,22 @@ async def websocket_endpoint(websocket: WebSocket, topic: str):
                 try:
                     npc = db.query(NPC).get(npc_id)
                     if not npc:
-                        await manager.send_personal(websocket, {"type": "error", "data": "NPC not found"})
+                        await manager.send_personal(websocket, {"type": "error", "data": "Персонаж не найден"})
                         continue
                     system = f"Ты {npc.name}. Выполни команду: {command}. Учитывай личность и состояние."
                     history = []
                     reply = await generate_reply(system, history, command)
-                    # Обработка команды, напр. если "go to shop" - move
-                    if 'go to' in command.lower():
-                        loc_name = command.split('to')[-1].strip()
-                        loc = db.query(Location).filter_by(name=loc_name).first()
-                        if loc:
-                            npc.x = random.uniform(loc.x_min, loc.x_max)
-                            npc.y = random.uniform(loc.y_min, loc.y_max)
-                            npc.state['location'] = loc_name
-                            db.commit()
-                            await broadcaster('map_update', {"id": npc.id, "x": npc.x, "y": npc.y, "location": loc_name})
-                    db.add(Message(npc_id=npc_id, role='user', content=f"Command: {reply}"))
+                    if 'go to' in command.lower() or command === 'tell about city':
+                        loc_name = command.split('to')[-1].strip() if 'go to' in command.lower() else None
+                        if loc_name:
+                            loc = db.query(Location).filter_by(name=loc_name).first()
+                            if loc:
+                                npc.x = random.uniform(loc.x_min, loc.x_max)
+                                npc.y = random.uniform(loc.y_min, loc.y_max)
+                                npc.state['location'] = loc_name
+                                db.commit()
+                                await broadcaster('map_update', {"id": npc.id, "x": npc.x, "y": npc.y, "location": loc_name})
+                    db.add(Message(npc_id=npc_id, role='user', content=f"Команда: {reply}"))
                     db.commit()
                     await manager.broadcast(topic, {"type": "command", "data": {"npc_id": npc_id, "reply": reply}})
                 finally:
